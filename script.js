@@ -35,7 +35,8 @@ const toggleAnswersBtn = document.getElementById("toggleAnswersBtn");
 document.addEventListener("DOMContentLoaded", init);
 addRowBtn.addEventListener("click", onAddRow);
 applyBtn.addEventListener("click", onApplyFeedback);
-resetBtn.addEventListener("click", () => resetAll(false)); // Ensure direct button press clears the board
+// FIXED: Explicitly call resetAll(false) to ensure the board is cleared on button press
+resetBtn.addEventListener("click", () => resetAll(false)); 
 guessInput().addEventListener("keydown", e => { if(e.key==="Enter") onAddRow(); });
 
 // NEW Event Listeners
@@ -65,7 +66,7 @@ function toggleAnswerMode() {
     activeAnswerSet = activeAnswerSet === 'answers' ? 'guesses' : 'answers';
     toggleAnswersBtn.textContent = `Answers: ${activeAnswerSet === 'answers' ? 'Official Set' : 'ALL Guesses'}`;
     
-    // Force a full reset and re-filter based on the new active set, keepBoard=true to preserve existing guesses
+    // Pass 'true' to preserve the board state while updating the possible words list
     resetAll(true); 
 }
 
