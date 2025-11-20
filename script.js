@@ -35,7 +35,7 @@ const toggleAnswersBtn = document.getElementById("toggleAnswersBtn");
 document.addEventListener("DOMContentLoaded", init);
 addRowBtn.addEventListener("click", onAddRow);
 applyBtn.addEventListener("click", onApplyFeedback);
-resetBtn.addEventListener("click", resetAll);
+resetBtn.addEventListener("click", () => resetAll(false)); // Ensure direct button press clears the board
 guessInput().addEventListener("keydown", e => { if(e.key==="Enter") onAddRow(); });
 
 // NEW Event Listeners
@@ -65,7 +65,7 @@ function toggleAnswerMode() {
     activeAnswerSet = activeAnswerSet === 'answers' ? 'guesses' : 'answers';
     toggleAnswersBtn.textContent = `Answers: ${activeAnswerSet === 'answers' ? 'Official Set' : 'ALL Guesses'}`;
     
-    // Force a full reset and re-filter based on the new active set
+    // Force a full reset and re-filter based on the new active set, keepBoard=true to preserve existing guesses
     resetAll(true); 
 }
 
@@ -156,8 +156,9 @@ function resetAll(keepBoard = false){
     const baseAnswerSet = activeAnswerSet === 'answers' ? allAnswers : allGuesses;
     possibleWords=[...baseAnswerSet]; 
     
+    // FIX: Clear the board HTML elements unless explicitly told not to (e.g., when toggling answer mode)
     if (!keepBoard) {
-        boardEl.innerHTML="";
+        boardEl.innerHTML=""; 
     }
     
     suggestionsEl.innerHTML="";
@@ -232,7 +233,6 @@ async function computeAndShowSuggestions(){
     }
 
     // 2. Filter Candidate Pool using allGuesses (always use the large guess list for candidates)
-    // We use baseScore as a quick filter to cut the calculation time.
     const scored=allGuesses.map(w=>({w,s:baseScore(w)})).sort((a,b)=>b.s-a.s);
     
     const K=Math.min(MAX_CANDIDATES,scored.length);
@@ -273,7 +273,7 @@ async function computeAndShowSuggestions(){
         if(idx%40===0) await sleep(0); 
     }
 
-    lastSuggestionResults=results; // Store results before sorting for display
+    lastSuggestionResults=results; 
     
     // Display the results with current sort key
     showSuggestions();
