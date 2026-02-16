@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>Wordle Helper</title>
+    <title>Wordle Helper & Analyzer</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <link rel="stylesheet" href="style.css" />
 </head>
@@ -13,8 +13,8 @@
             <button id="addRowBtn">Add Row</button>
             <button id="applyBtn">Apply Feedback</button>
             <button id="resetBtn">Reset</button>
-            
-            <button id="toggleAnswersBtn">Answers: Official Set</button> 
+            <button id="toggleAnswersBtn" class="btn-blue">Answers: Official Set</button> 
+            <button id="analyzeBtn" class="btn-purple">Analyze Game</button>
             
             <div id="status">Loading words...</div>
         </section>
@@ -25,19 +25,28 @@
 
         <section id="info">
             <div id="stats">
-                <strong>Possible solutions:</strong> <span id="possibleCount">—</span><br/>
-                <strong>Theoretical min guesses:</strong> <span id="minGuesses">—</span><br/>
-                <strong>Expected remaining after best guess:</strong> <span id="expectedAfter">—</span>
+                <div class="stat-item">
+                    <strong>Possible solutions:</strong> <span id="possibleCount">—</span>
+                </div>
+                <div class="stat-item">
+                    <strong>Theoretical min guesses:</strong> <span id="minGuesses">—</span>
+                </div>
+                <div class="stat-item">
+                    <strong>Expected remaining:</strong> <span id="expectedAfter">—</span>
+                </div>
+                <div class="stat-item">
+                    <strong>Average Game Skill:</strong> <span id="avgSkill">—</span>
+                </div>
             </div>
 
             <div id="suggestionsWrap">
-                <h2>Top Suggestions</h2>
-                
-                <div class="sort-controls">
-                    <strong>Sort By:</strong>
-                    <button id="sortExpBtn" class="active-sort">Exp. Remaining</button>
-                    <button id="sortEntropyBtn">Entropy</button>
-                    <button id="sortScoreBtn">Base Score</button>
+                <div class="header-flex">
+                    <h2>Top Suggestions</h2>
+                    <div class="sort-controls">
+                        <button id="sortExpBtn" class="active-sort">Exp. Rem</button>
+                        <button id="sortEntropyBtn">Entropy</button>
+                        <button id="sortScoreBtn">Base Score</button>
+                    </div>
                 </div>
                 
                 <div id="computing" class="hidden">Computing suggestions... ⏳</div>
