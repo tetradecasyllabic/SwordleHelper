@@ -97,8 +97,7 @@ function getPattern(guess, solution) {
 
 async function updateStatsAndSuggestions() {
     el.possibleCount.textContent = possibleWords.length;
-    // Simple log base 3 calculation for min guesses
-    const minG = possibleWords.length <= 1 ? possibleWords.length : Math.ceil(Math.log(possibleWords.length) / Math.log(3.5));
+    const minG = possibleWords.length <= 1 ? 0 : Math.ceil(Math.log(possibleWords.length) / Math.log(3.5));
     el.minGuesses.textContent = possibleWords.length === 0 ? "0" : minG;
     await computeSuggestions();
 }
@@ -110,12 +109,9 @@ async function computeSuggestions() {
     }
     
     el.computing.classList.remove("hidden");
-    await new Promise(r => setTimeout(r, 10)); // Allow UI to update
+    await new Promise(r => setTimeout(r, 10));
 
     const N = possibleWords.length;
-    
-    // STEP 1: Fast Letter Frequency Score
-    // This stops the "Starts with A" bias by finding words with common letters first
     const freq = {};
     possibleWords.forEach(w => {
         const uniqueChars = new Set(w);
@@ -134,37 +130,22 @@ async function computeSuggestions() {
         return { word: w, score };
     }).sort((a, b) => b.score - a.score);
 
-    // STEP 2: Pick the top 200 high-frequency words + current possible words
     const candidates = Array.from(new Set([
         ...scoredPool.slice(0, 200).map(x => x.word),
         ...possibleWords.slice(0, 100)
     ]));
 
-    // STEP 3: Heavy Entropy / Expected Remaining Math
     const results = [];
     for (const cand of candidates) {
-        const patternCounts = new Map();
-        for (const sol of possibleWords) {
-            const p = getPattern(cand, sol);
-            patternCounts.set(p, (patternCounts.get(p) || 0) + 1);
-        }
-
-        let entropy = 0, sumSq = 0;
-        for (const count of patternCounts.values()) {
-            const prob = count / N;
-            entropy -= prob * Math.log2(prob);
-            sumSq += count * count;
-        }
-
+        const stats = calcEntropyStats(cand, possibleWords);
         results.push({ 
             word: cand, 
-            entropy, 
-            expectedRemaining: sumSq / N,
+            entropy: stats.entropy, 
+            expectedRemaining: stats.expectedRemaining,
             baseScore: scoredPool.find(x => x.word === cand)?.score || 0
         });
     }
 
-    // STEP 4: Sort and Render
     if (currentSortKey === 'entropy') {
         results.sort((a, b) => b.entropy - a.entropy || a.expectedRemaining - b.expectedRemaining);
     } else if (currentSortKey === 'baseScore') {
@@ -175,6 +156,22 @@ async function computeSuggestions() {
 
     renderSuggestions(results.slice(0, 15));
     el.computing.classList.add("hidden");
+}
+
+function calcEntropyStats(word, pool) {
+    const N = pool.length;
+    const counts = new Map();
+    for (const sol of pool) {
+        const p = getPattern(word, sol);
+        counts.set(p, (counts.get(p) || 0) + 1);
+    }
+    let entropy = 0, sumSq = 0;
+    for (const count of counts.values()) {
+        const prob = count / N;
+        entropy -= prob * Math.log2(prob);
+        sumSq += count * count;
+    }
+    return { entropy, expectedRemaining: sumSq / N };
 }
 
 function renderSuggestions(list) {
@@ -205,7 +202,7 @@ function renderSuggestions(list) {
     }
 }
 
-function onAddRow(word) {
+function onAddRow(word, analysisData = null) {
     const guess = word.trim().toLowerCase();
     if (guess.length !== 5 || !allGuesses.includes(guess)) {
         alert("Not a valid 5-letter word.");
@@ -231,6 +228,15 @@ function onAddRow(word) {
         row.appendChild(tile);
     }
     rowCont.appendChild(row);
+
+    if (analysisData) {
+        const info = document.createElement("div");
+        info.className = "analysis-label";
+        const skillClass = analysisData.skill >= 90 ? 'skill-high' : '';
+        info.innerHTML = `E: ${analysisData.ent.toFixed(2)}<br><span class="${skillClass}">${analysisData.skill}% Skill</span>`;
+        rowCont.appendChild(info);
+    }
+
     el.board.appendChild(rowCont);
     el.input.value = "";
 }
@@ -252,13 +258,13 @@ function onApplyFeedback() {
 function setSort(key) {
     currentSortKey = key;
     el.sortExp.classList.toggle("active-sort", key === 'expectedRemaining');
-    el.sortEntropyBtn.classList.toggle("active-sort", key === 'entropy');
-    el.sortScoreBtn.classList.toggle("active-sort", key === 'baseScore');
+    el.sortEnt.classList.toggle("active-sort", key === 'entropy');
+    el.sortScore.classList.toggle("active-sort", key === 'baseScore');
     computeSuggestions();
 }
 
 async function promptAnalyze() {
-    const input = prompt("Enter guesses (e.g., CRANE SLOTH):");
+    const input = prompt("Enter your game guesses (space-separated, e.g., ADIEU CRANE):");
     if (!input) return;
     const guesses = input.toLowerCase().split(/[\s,]+/).filter(w => w.length === 5);
     if (guesses.length === 0) return;
@@ -267,15 +273,41 @@ async function promptAnalyze() {
     el.board.innerHTML = "";
     possibleWords = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
     
+    let totalSkill = 0;
+
     for (const g of guesses) {
-        onAddRow(g);
+        const nBefore = possibleWords.length;
+        if (nBefore === 0) break;
+
+        // Calculate max entropy for this turn to determine skill
+        // Use a sample of the most likely words for speed
+        const sampleSize = Math.min(possibleWords.length, 100);
+        const sample = possibleWords.slice(0, sampleSize);
+        let maxEnt = 0;
+        sample.forEach(w => {
+            const ent = calcEntropyStats(w, possibleWords).entropy;
+            if (ent > maxEnt) maxEnt = ent;
+        });
+
+        const currentStats = calcEntropyStats(g, possibleWords);
+        const skill = maxEnt > 0 ? Math.round((currentStats.entropy / maxEnt) * 100) : 100;
+        totalSkill += skill;
+
+        onAddRow(g, { ent: currentStats.entropy, skill: Math.min(100, skill) });
+
         const lastRow = el.board.lastChild.querySelector(".row");
         const tiles = lastRow.querySelectorAll(".tile");
         const pattern = getPattern(g, target);
+        
         pattern.split("").forEach((p, i) => {
             tiles[i].dataset.state = p;
             tiles[i].className = `tile state-${p}`;
         });
+
+        // Filter possible words for the next guess
+        possibleWords = possibleWords.filter(sol => getPattern(g, sol) === pattern);
     }
-    onApplyFeedback();
+
+    el.avgSkill.textContent = Math.round(totalSkill / guesses.length) + "%";
+    updateStatsAndSuggestions();
 }
