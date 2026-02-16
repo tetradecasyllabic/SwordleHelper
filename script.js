@@ -7,9 +7,7 @@ let allGuesses = [];
 let possibleWords = [];
 let activeAnswerSet = 'answers';
 let currentSortKey = 'expectedRemaining';
-let currentAnalysis = [];
 
-// --- Elements ---
 const el = {
     input: document.getElementById("guessInput"),
     addBtn: document.getElementById("addRowBtn"),
@@ -41,94 +39,44 @@ async function init() {
             fetch(RAW_GUESSES_URL, { cache: "no-cache" })
         ]);
         
-        const txtA = await resA.text();
-        const txtG = await resG.text();
-
-        allAnswers = txtA.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(s => s.length === 5);
-        const uniqueGuesses = txtG.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(s => s.length === 5);
-        
-        // Combine unique guesses and all answers into the definitive guessable list
+        allAnswers = (await resA.text()).split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(s => s.length === 5);
+        const uniqueGuesses = (await resG.text()).split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(s => s.length === 5);
         allGuesses = Array.from(new Set([...uniqueGuesses, ...allAnswers]));
         
         resetAll();
         el.status.textContent = `Ready! ${allAnswers.length} answers loaded.`;
     } catch (e) {
-        console.error(e);
-        el.status.textContent = "Error loading words. Ensure answers.txt and guesses.txt exist.";
+        el.status.textContent = "Error loading word files.";
     }
 }
 
 // --- Event Listeners ---
 el.addBtn.onclick = () => onAddRow(el.input.value);
 el.applyBtn.onclick = onApplyFeedback;
-el.resetBtn.onclick = () => resetAll();
+el.resetBtn.onclick = resetAll;
 el.toggleBtn.onclick = toggleAnswerMode;
 el.analyzeBtn.onclick = promptAnalyze;
 el.sortExp.onclick = () => setSort('expectedRemaining');
 el.sortEnt.onclick = () => setSort('entropy');
 el.sortScore.onclick = () => setSort('baseScore');
-el.input.onkeydown = (e) => {
-    if (e.key === "Enter") onAddRow(el.input.value);
-};
+el.input.onkeydown = (e) => { if (e.key === "Enter") onAddRow(el.input.value); };
 
 document.addEventListener("DOMContentLoaded", init);
 
-// --- Functions ---
-
-function toggleAnswerMode() {
-    activeAnswerSet = activeAnswerSet === 'answers' ? 'guesses' : 'answers';
-    el.toggleBtn.textContent = `Answers: ${activeAnswerSet === 'answers' ? 'Official Set' : 'ALL Guesses'}`;
-    resetAll();
-}
+// --- Core Logic ---
 
 function resetAll() {
     possibleWords = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
     el.board.innerHTML = "";
     el.avgSkill.textContent = "—";
-    currentAnalysis = [];
+    el.input.value = "";
     updateStatsAndSuggestions();
 }
 
-function onAddRow(word, analysisData = null) {
-    const guess = word.trim().toLowerCase();
-    if (!/^[a-z]{5}$/.test(guess)) return;
-    if (!allGuesses.includes(guess)) {
-        alert("Not in word list.");
-        return;
-    }
-
-    const rowCont = document.createElement("div");
-    rowCont.className = "row-container";
-
-    const row = document.createElement("div");
-    row.className = "row";
-    row.dataset.guess = guess;
-
-    for (let i = 0; i < 5; i++) {
-        const tile = document.createElement("div");
-        tile.className = "tile state-0";
-        tile.textContent = guess[i].toUpperCase();
-        tile.dataset.state = "0";
-        tile.onclick = () => {
-            let s = (parseInt(tile.dataset.state) + 1) % 3;
-            tile.dataset.state = s;
-            tile.className = `tile state-${s}`;
-        };
-        row.appendChild(tile);
-    }
-
-    rowCont.appendChild(row);
-
-    if (analysisData) {
-        const info = document.createElement("div");
-        info.className = "analysis-label";
-        const skillColor = analysisData.skill > 80 ? 'skill-high' : '';
-        info.innerHTML = `Entropy: ${analysisData.ent.toFixed(2)}<br>Skill: <span class="${skillColor}">${analysisData.skill}%</span>`;
-        rowCont.appendChild(info);
-    }
-
-    el.board.appendChild(rowCont);
-    el.input.value = "";
+function toggleAnswerMode() {
+    activeAnswerSet = activeAnswerSet === 'answers' ? 'guesses' : 'answers';
+    el.toggleBtn.textContent = `Answers: ${activeAnswerSet === 'answers' ? 'Official Set' : 'ALL Guesses'}`;
+    resetAll();
 }
 
 function getPattern(guess, solution) {
@@ -149,68 +97,74 @@ function getPattern(guess, solution) {
 
 async function updateStatsAndSuggestions() {
     el.possibleCount.textContent = possibleWords.length;
-    const minG = possibleWords.length <= 1 ? 0 : Math.ceil(Math.log2(possibleWords.length) / Math.log2(3.5));
-    el.minGuesses.textContent = possibleWords.length === 0 ? "—" : (possibleWords.length === 1 ? "Solved" : minG);
+    // Simple log base 3 calculation for min guesses
+    const minG = possibleWords.length <= 1 ? possibleWords.length : Math.ceil(Math.log(possibleWords.length) / Math.log(3.5));
+    el.minGuesses.textContent = possibleWords.length === 0 ? "0" : minG;
     await computeSuggestions();
 }
 
-function calculateLetterFrequencyScore(word, pool) {
-    const freq = {};
-    pool.forEach(w => {
-        const seen = new Set(w);
-        seen.forEach(c => freq[c] = (freq[c] || 0) + 1);
-    });
-    let score = 0;
-    const seenChars = new Set();
-    for (const char of word) {
-        if (!seenChars.has(char)) {
-            score += (freq[char] || 0);
-            seenChars.add(char);
-        }
-    }
-    return score;
-}
-
 async function computeSuggestions() {
+    if (possibleWords.length === 0) {
+        el.suggestions.innerHTML = "<li>No words possible</li>";
+        return;
+    }
+    
     el.computing.classList.remove("hidden");
-    await new Promise(r => setTimeout(r, 10)); // UI Breath
+    await new Promise(r => setTimeout(r, 10)); // Allow UI to update
 
-    const N = possibleWords.length || 1;
+    const N = possibleWords.length;
     
-    // To solve the "Starts with A" bias, we pre-sort the pool by letter frequency
-    // This ensures the 100-word sample contains high-quality "information getters"
-    const frequencyPool = allGuesses.map(w => ({
-        word: w,
-        score: calculateLetterFrequencyScore(w, possibleWords)
-    })).sort((a, b) => b.score - a.score);
+    // STEP 1: Fast Letter Frequency Score
+    // This stops the "Starts with A" bias by finding words with common letters first
+    const freq = {};
+    possibleWords.forEach(w => {
+        const uniqueChars = new Set(w);
+        uniqueChars.forEach(c => freq[c] = (freq[c] || 0) + 1);
+    });
 
+    const scoredPool = allGuesses.map(w => {
+        let score = 0;
+        const seen = new Set();
+        for (const char of w) {
+            if (!seen.has(char)) {
+                score += (freq[char] || 0);
+                seen.add(char);
+            }
+        }
+        return { word: w, score };
+    }).sort((a, b) => b.score - a.score);
+
+    // STEP 2: Pick the top 200 high-frequency words + current possible words
+    const candidates = Array.from(new Set([
+        ...scoredPool.slice(0, 200).map(x => x.word),
+        ...possibleWords.slice(0, 100)
+    ]));
+
+    // STEP 3: Heavy Entropy / Expected Remaining Math
     const results = [];
-    const poolSize = possibleWords.length < 200 ? allGuesses.length : 150;
-    const testPool = frequencyPool.slice(0, poolSize).map(x => x.word);
-    
-    // Ensure all remaining possible words are included in the analysis
-    const finalPool = Array.from(new Set([...testPool, ...possibleWords.slice(0, 50)]));
-
-    for (const cand of finalPool) {
-        const counts = new Map();
+    for (const cand of candidates) {
+        const patternCounts = new Map();
         for (const sol of possibleWords) {
             const p = getPattern(cand, sol);
-            counts.set(p, (counts.get(p) || 0) + 1);
+            patternCounts.set(p, (patternCounts.get(p) || 0) + 1);
         }
+
         let entropy = 0, sumSq = 0;
-        for (const c of counts.values()) {
-            const p = c / N;
-            entropy -= p * Math.log2(p);
-            sumSq += c * c;
+        for (const count of patternCounts.values()) {
+            const prob = count / N;
+            entropy -= prob * Math.log2(prob);
+            sumSq += count * count;
         }
+
         results.push({ 
             word: cand, 
             entropy, 
-            expectedRemaining: sumSq / N, 
-            baseScore: calculateLetterFrequencyScore(cand, possibleWords) 
+            expectedRemaining: sumSq / N,
+            baseScore: scoredPool.find(x => x.word === cand)?.score || 0
         });
     }
 
+    // STEP 4: Sort and Render
     if (currentSortKey === 'entropy') {
         results.sort((a, b) => b.entropy - a.entropy || a.expectedRemaining - b.expectedRemaining);
     } else if (currentSortKey === 'baseScore') {
@@ -219,14 +173,14 @@ async function computeSuggestions() {
         results.sort((a, b) => a.expectedRemaining - b.expectedRemaining || b.entropy - a.entropy);
     }
 
-    renderSuggestions(results.slice(0, 10));
+    renderSuggestions(results.slice(0, 15));
     el.computing.classList.add("hidden");
 }
 
 function renderSuggestions(list) {
     el.suggestions.innerHTML = "";
-    if (list.length) el.expectedAfter.textContent = list[0].expectedRemaining.toFixed(1);
-    
+    if (list.length > 0) el.expectedAfter.textContent = list[0].expectedRemaining.toFixed(1);
+
     list.forEach(item => {
         const li = document.createElement("li");
         li.innerHTML = `
@@ -243,13 +197,42 @@ function renderSuggestions(list) {
         el.suggestions.appendChild(li);
     });
 
-    // Possible words list
-    if (possibleWords.length < 50 && possibleWords.length > 0) {
+    if (possibleWords.length > 0 && possibleWords.length < 100) {
         el.possibleAnswersWrap.classList.remove("hidden");
         el.possibleAnswers.innerHTML = possibleWords.map(w => `<li>${w.toUpperCase()}</li>`).join("");
     } else {
         el.possibleAnswersWrap.classList.add("hidden");
     }
+}
+
+function onAddRow(word) {
+    const guess = word.trim().toLowerCase();
+    if (guess.length !== 5 || !allGuesses.includes(guess)) {
+        alert("Not a valid 5-letter word.");
+        return;
+    }
+
+    const rowCont = document.createElement("div");
+    rowCont.className = "row-container";
+    const row = document.createElement("div");
+    row.className = "row";
+    row.dataset.guess = guess;
+
+    for (let i = 0; i < 5; i++) {
+        const tile = document.createElement("div");
+        tile.className = "tile state-0";
+        tile.textContent = guess[i].toUpperCase();
+        tile.dataset.state = "0";
+        tile.onclick = () => {
+            let s = (parseInt(tile.dataset.state) + 1) % 3;
+            tile.dataset.state = s;
+            tile.className = `tile state-${s}`;
+        };
+        row.appendChild(tile);
+    }
+    rowCont.appendChild(row);
+    el.board.appendChild(rowCont);
+    el.input.value = "";
 }
 
 function onApplyFeedback() {
@@ -266,76 +249,33 @@ function onApplyFeedback() {
     updateStatsAndSuggestions();
 }
 
-async function promptAnalyze() {
-    const input = prompt("Enter your game (guesses separated by spaces):", "CRANE SLOTH");
-    if (!input) return;
-    const guesses = input.toLowerCase().split(/[\s,]+/).filter(w => w.length === 5);
-    const target = guesses[guesses.length - 1]; 
-
-    el.board.innerHTML = "";
-    possibleWords = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
-    let totalSkill = 0;
-
-    for (let i = 0; i < guesses.length; i++) {
-        const guess = guesses[i];
-        const N = possibleWords.length;
-        if (N === 0) break;
-
-        let skill = 0;
-        let currentEnt = 0;
-
-        if (N === 1) {
-            skill = 100;
-            currentEnt = 0;
-        } else {
-            const sample = possibleWords.slice(0, 50);
-            let maxEnt = 0;
-            sample.forEach(w => {
-                const ent = calcWordEntropy(w, possibleWords);
-                if (ent > maxEnt) maxEnt = ent;
-            });
-
-            currentEnt = calcWordEntropy(guess, possibleWords);
-            skill = maxEnt > 0 ? (currentEnt / maxEnt) * 100 : 100;
-        }
-
-        totalSkill += skill;
-        onAddRow(guess, { ent: currentEnt, skill: Math.round(Math.min(100, skill)) });
-
-        const pattern = getPattern(guess, target);
-        possibleWords = possibleWords.filter(sol => getPattern(guess, sol) === pattern);
-        
-        const lastRow = el.board.lastChild.querySelector(".row");
-        const tiles = lastRow.querySelectorAll(".tile");
-        pattern.split("").forEach((p, idx) => {
-            tiles[idx].dataset.state = p;
-            tiles[idx].className = `tile state-${p}`;
-        });
-    }
-
-    el.avgSkill.textContent = Math.round(totalSkill / guesses.length) + "%";
-    updateStatsAndSuggestions();
-}
-
-function calcWordEntropy(word, pool) {
-    const counts = new Map();
-    const N = pool.length;
-    pool.forEach(sol => {
-        const p = getPattern(word, sol);
-        counts.set(p, (counts.get(p) || 0) + 1);
-    });
-    let ent = 0;
-    for (const c of counts.values()) {
-        const p = c / N;
-        ent -= p * Math.log2(p);
-    }
-    return ent;
-}
-
 function setSort(key) {
     currentSortKey = key;
     el.sortExp.classList.toggle("active-sort", key === 'expectedRemaining');
-    el.sortEnt.classList.toggle("active-sort", key === 'entropy');
-    el.sortScore.classList.toggle("active-sort", key === 'baseScore');
+    el.sortEntropyBtn.classList.toggle("active-sort", key === 'entropy');
+    el.sortScoreBtn.classList.toggle("active-sort", key === 'baseScore');
     computeSuggestions();
+}
+
+async function promptAnalyze() {
+    const input = prompt("Enter guesses (e.g., CRANE SLOTH):");
+    if (!input) return;
+    const guesses = input.toLowerCase().split(/[\s,]+/).filter(w => w.length === 5);
+    if (guesses.length === 0) return;
+    
+    const target = guesses[guesses.length - 1];
+    el.board.innerHTML = "";
+    possibleWords = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
+    
+    for (const g of guesses) {
+        onAddRow(g);
+        const lastRow = el.board.lastChild.querySelector(".row");
+        const tiles = lastRow.querySelectorAll(".tile");
+        const pattern = getPattern(g, target);
+        pattern.split("").forEach((p, i) => {
+            tiles[i].dataset.state = p;
+            tiles[i].className = `tile state-${p}`;
+        });
+    }
+    onApplyFeedback();
 }
