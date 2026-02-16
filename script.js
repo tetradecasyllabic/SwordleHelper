@@ -44,14 +44,14 @@ async function init() {
         const txtA = await resA.text();
         const txtG = await resG.text();
 
-        allAnswers = txtA.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
-        const uniqueGuesses = txtG.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+        allAnswers = txtA.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(s => s.length === 5);
+        const uniqueGuesses = txtG.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(s => s.length === 5);
         
         // Combine unique guesses and all answers into the definitive guessable list
         allGuesses = Array.from(new Set([...uniqueGuesses, ...allAnswers]));
         
         resetAll();
-        el.status.textContent = `Ready! ${allAnswers.length} answers, ${allGuesses.length} total guesses.`;
+        el.status.textContent = `Ready! ${allAnswers.length} answers loaded.`;
     } catch (e) {
         console.error(e);
         el.status.textContent = "Error loading words. Ensure answers.txt and guesses.txt exist.";
@@ -67,7 +67,9 @@ el.analyzeBtn.onclick = promptAnalyze;
 el.sortExp.onclick = () => setSort('expectedRemaining');
 el.sortEnt.onclick = () => setSort('entropy');
 el.sortScore.onclick = () => setSort('baseScore');
-el.input.onkeydown = (e) => e.key === "Enter" && onAddRow(el.input.value);
+el.input.onkeydown = (e) => {
+    if (e.key === "Enter") onAddRow(el.input.value);
+};
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -147,9 +149,26 @@ function getPattern(guess, solution) {
 
 async function updateStatsAndSuggestions() {
     el.possibleCount.textContent = possibleWords.length;
-    const minG = Math.ceil(Math.log2(Math.max(1, possibleWords.length)) / Math.log2(243));
-    el.minGuesses.textContent = possibleWords.length <= 1 ? "Solved" : minG;
+    const minG = possibleWords.length <= 1 ? 0 : Math.ceil(Math.log2(possibleWords.length) / Math.log2(3.5));
+    el.minGuesses.textContent = possibleWords.length === 0 ? "—" : (possibleWords.length === 1 ? "Solved" : minG);
     await computeSuggestions();
+}
+
+function calculateLetterFrequencyScore(word, pool) {
+    const freq = {};
+    pool.forEach(w => {
+        const seen = new Set(w);
+        seen.forEach(c => freq[c] = (freq[c] || 0) + 1);
+    });
+    let score = 0;
+    const seenChars = new Set();
+    for (const char of word) {
+        if (!seenChars.has(char)) {
+            score += (freq[char] || 0);
+            seenChars.add(char);
+        }
+    }
+    return score;
 }
 
 async function computeSuggestions() {
@@ -158,15 +177,21 @@ async function computeSuggestions() {
 
     const N = possibleWords.length || 1;
     
-    // Simple filter to speed up suggestions
+    // To solve the "Starts with A" bias, we pre-sort the pool by letter frequency
+    // This ensures the 100-word sample contains high-quality "information getters"
+    const frequencyPool = allGuesses.map(w => ({
+        word: w,
+        score: calculateLetterFrequencyScore(w, possibleWords)
+    })).sort((a, b) => b.score - a.score);
+
     const results = [];
-    const pool = possibleWords.length < 50 ? allGuesses : allAnswers;
+    const poolSize = possibleWords.length < 200 ? allGuesses.length : 150;
+    const testPool = frequencyPool.slice(0, poolSize).map(x => x.word);
+    
+    // Ensure all remaining possible words are included in the analysis
+    const finalPool = Array.from(new Set([...testPool, ...possibleWords.slice(0, 50)]));
 
-    // To keep it fast for browser, we only analyze a subset of best words
-    const sampleSize = possibleWords.length > 500 ? 100 : pool.length;
-    const testPool = pool.slice(0, sampleSize);
-
-    for (const cand of testPool) {
+    for (const cand of finalPool) {
         const counts = new Map();
         for (const sol of possibleWords) {
             const p = getPattern(cand, sol);
@@ -178,10 +203,22 @@ async function computeSuggestions() {
             entropy -= p * Math.log2(p);
             sumSq += c * c;
         }
-        results.push({ word: cand, entropy, expectedRemaining: sumSq / N, baseScore: 0 });
+        results.push({ 
+            word: cand, 
+            entropy, 
+            expectedRemaining: sumSq / N, 
+            baseScore: calculateLetterFrequencyScore(cand, possibleWords) 
+        });
     }
 
-    results.sort((a, b) => currentSortKey === 'entropy' ? b.entropy - a.entropy : a.expectedRemaining - b.expectedRemaining);
+    if (currentSortKey === 'entropy') {
+        results.sort((a, b) => b.entropy - a.entropy || a.expectedRemaining - b.expectedRemaining);
+    } else if (currentSortKey === 'baseScore') {
+        results.sort((a, b) => b.baseScore - a.baseScore);
+    } else {
+        results.sort((a, b) => a.expectedRemaining - b.expectedRemaining || b.entropy - a.entropy);
+    }
+
     renderSuggestions(results.slice(0, 10));
     el.computing.classList.add("hidden");
 }
@@ -189,6 +226,7 @@ async function computeSuggestions() {
 function renderSuggestions(list) {
     el.suggestions.innerHTML = "";
     if (list.length) el.expectedAfter.textContent = list[0].expectedRemaining.toFixed(1);
+    
     list.forEach(item => {
         const li = document.createElement("li");
         li.innerHTML = `
@@ -196,13 +234,17 @@ function renderSuggestions(list) {
                 <span class="sugg-word">${item.word.toUpperCase()}</span>
                 <span class="sugg-meta">E: ${item.entropy.toFixed(2)} | Rem: ${item.expectedRemaining.toFixed(1)}</span>
             </div>
-            <button onclick="el.input.value='${item.word}'; el.input.focus();">Use</button>
+            <button class="use-btn">Use</button>
         `;
+        li.querySelector(".use-btn").onclick = () => {
+            el.input.value = item.word;
+            el.input.focus();
+        };
         el.suggestions.appendChild(li);
     });
 
     // Possible words list
-    if (possibleWords.length < 40 && possibleWords.length > 0) {
+    if (possibleWords.length < 50 && possibleWords.length > 0) {
         el.possibleAnswersWrap.classList.remove("hidden");
         el.possibleAnswers.innerHTML = possibleWords.map(w => `<li>${w.toUpperCase()}</li>`).join("");
     } else {
@@ -228,7 +270,7 @@ async function promptAnalyze() {
     const input = prompt("Enter your game (guesses separated by spaces):", "CRANE SLOTH");
     if (!input) return;
     const guesses = input.toLowerCase().split(/[\s,]+/).filter(w => w.length === 5);
-    const target = guesses[guesses.length - 1]; // Assume last word is target
+    const target = guesses[guesses.length - 1]; 
 
     el.board.innerHTML = "";
     possibleWords = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
@@ -236,12 +278,9 @@ async function promptAnalyze() {
 
     for (let i = 0; i < guesses.length; i++) {
         const guess = guesses[i];
-        
-        // 1. Calculate best possible entropy for current state
         const N = possibleWords.length;
         if (N === 0) break;
 
-        // If only 1 word left, and you guess it, skill is 100%
         let skill = 0;
         let currentEnt = 0;
 
@@ -249,8 +288,7 @@ async function promptAnalyze() {
             skill = 100;
             currentEnt = 0;
         } else {
-            // Find max entropy in pool
-            const sample = possibleWords.slice(0, 50); // Sample for speed
+            const sample = possibleWords.slice(0, 50);
             let maxEnt = 0;
             sample.forEach(w => {
                 const ent = calcWordEntropy(w, possibleWords);
@@ -262,13 +300,11 @@ async function promptAnalyze() {
         }
 
         totalSkill += skill;
-        onAddRow(guess, { ent: currentEnt, skill: Math.round(skill) });
+        onAddRow(guess, { ent: currentEnt, skill: Math.round(Math.min(100, skill)) });
 
-        // Update possible words for next turn based on target
         const pattern = getPattern(guess, target);
         possibleWords = possibleWords.filter(sol => getPattern(guess, sol) === pattern);
         
-        // Update tiles visually
         const lastRow = el.board.lastChild.querySelector(".row");
         const tiles = lastRow.querySelectorAll(".tile");
         pattern.split("").forEach((p, idx) => {
