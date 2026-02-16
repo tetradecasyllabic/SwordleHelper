@@ -102,6 +102,23 @@ async function updateStatsAndSuggestions() {
     await computeSuggestions();
 }
 
+function calcEntropyStats(word, pool) {
+    const N = pool.length;
+    if (N === 0) return { entropy: 0, expectedRemaining: 0 };
+    const counts = new Map();
+    for (const sol of pool) {
+        const p = getPattern(word, sol);
+        counts.set(p, (counts.get(p) || 0) + 1);
+    }
+    let entropy = 0, sumSq = 0;
+    for (const count of counts.values()) {
+        const prob = count / N;
+        entropy -= prob * Math.log2(prob);
+        sumSq += count * count;
+    }
+    return { entropy, expectedRemaining: sumSq / N };
+}
+
 async function computeSuggestions() {
     if (possibleWords.length === 0) {
         el.suggestions.innerHTML = "<li>No words possible</li>";
@@ -156,22 +173,6 @@ async function computeSuggestions() {
 
     renderSuggestions(results.slice(0, 15));
     el.computing.classList.add("hidden");
-}
-
-function calcEntropyStats(word, pool) {
-    const N = pool.length;
-    const counts = new Map();
-    for (const sol of pool) {
-        const p = getPattern(word, sol);
-        counts.set(p, (counts.get(p) || 0) + 1);
-    }
-    let entropy = 0, sumSq = 0;
-    for (const count of counts.values()) {
-        const prob = count / N;
-        entropy -= prob * Math.log2(prob);
-        sumSq += count * count;
-    }
-    return { entropy, expectedRemaining: sumSq / N };
 }
 
 function renderSuggestions(list) {
@@ -232,7 +233,7 @@ function onAddRow(word, analysisData = null) {
     if (analysisData) {
         const info = document.createElement("div");
         info.className = "analysis-label";
-        const skillClass = analysisData.skill >= 90 ? 'skill-high' : '';
+        const skillClass = analysisData.skill >= 98 ? 'skill-high' : '';
         info.innerHTML = `E: ${analysisData.ent.toFixed(2)}<br><span class="${skillClass}">${analysisData.skill}% Skill</span>`;
         rowCont.appendChild(info);
     }
@@ -258,13 +259,13 @@ function onApplyFeedback() {
 function setSort(key) {
     currentSortKey = key;
     el.sortExp.classList.toggle("active-sort", key === 'expectedRemaining');
-    el.sortEnt.classList.toggle("active-sort", key === 'entropy');
-    el.sortScore.classList.toggle("active-sort", key === 'baseScore');
+    el.sortEntropyBtn.classList.toggle("active-sort", key === 'entropy');
+    el.sortScoreBtn.classList.toggle("active-sort", key === 'baseScore');
     computeSuggestions();
 }
 
 async function promptAnalyze() {
-    const input = prompt("Enter your game guesses (space-separated, e.g., ADIEU CRANE):");
+    const input = prompt("Enter guesses (e.g., ADIEU CRANE):");
     if (!input) return;
     const guesses = input.toLowerCase().split(/[\s,]+/).filter(w => w.length === 5);
     if (guesses.length === 0) return;
@@ -276,24 +277,47 @@ async function promptAnalyze() {
     let totalSkill = 0;
 
     for (const g of guesses) {
-        const nBefore = possibleWords.length;
-        if (nBefore === 0) break;
+        if (possibleWords.length === 0) break;
 
-        // Calculate max entropy for this turn to determine skill
-        // Use a sample of the most likely words for speed
-        const sampleSize = Math.min(possibleWords.length, 100);
-        const sample = possibleWords.slice(0, sampleSize);
+        // Find the absolute max entropy for skill comparison
+        // We evaluate a larger sample for the analyzer to ensure accuracy
+        const sampleSize = 150;
+        const freq = {};
+        possibleWords.forEach(w => {
+            const uniqueChars = new Set(w);
+            uniqueChars.forEach(c => freq[c] = (freq[c] || 0) + 1);
+        });
+        const analyzerPool = allGuesses.map(w => {
+            let score = 0;
+            const seen = new Set();
+            for (const char of w) { if (!seen.has(char)) { score += (freq[char] || 0); seen.add(char); } }
+            return { word: w, score };
+        }).sort((a, b) => b.score - a.score).slice(0, sampleSize).map(x => x.word);
+        
+        // Ensure words in the current possible set are also considered
+        const comparisonCandidates = Array.from(new Set([...analyzerPool, ...possibleWords.slice(0, 50)]));
+        
         let maxEnt = 0;
-        sample.forEach(w => {
+        comparisonCandidates.forEach(w => {
             const ent = calcEntropyStats(w, possibleWords).entropy;
             if (ent > maxEnt) maxEnt = ent;
         });
 
         const currentStats = calcEntropyStats(g, possibleWords);
-        const skill = maxEnt > 0 ? Math.round((currentStats.entropy / maxEnt) * 100) : 100;
+        
+        // Precision check: If entropy is very close to max, treat as 100%
+        // Otherwise, use a rounded ratio
+        let skill = 0;
+        if (maxEnt === 0) {
+            skill = 100;
+        } else {
+            const ratio = currentStats.entropy / maxEnt;
+            skill = ratio > 0.999 ? 100 : Math.floor(ratio * 100);
+        }
+        
         totalSkill += skill;
 
-        onAddRow(g, { ent: currentStats.entropy, skill: Math.min(100, skill) });
+        onAddRow(g, { ent: currentStats.entropy, skill: skill });
 
         const lastRow = el.board.lastChild.querySelector(".row");
         const tiles = lastRow.querySelectorAll(".tile");
@@ -304,7 +328,6 @@ async function promptAnalyze() {
             tiles[i].className = `tile state-${p}`;
         });
 
-        // Filter possible words for the next guess
         possibleWords = possibleWords.filter(sol => getPattern(g, sol) === pattern);
     }
 
