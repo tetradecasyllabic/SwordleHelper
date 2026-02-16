@@ -1,151 +1,296 @@
-:root {
-    --bg: #121213;
-    --panel: #1a1a1b;
-    --text: #ffffff;
-    --muted: #9b9b9b;
-    --tile-size: 56px;
-    --accent-green: #6aaa64;
-    --accent-yellow: #c9b458;
-    --accent-gray: #3a3a3c;
-    --accent-blue: #3b82f6;
-    --accent-purple: #8b5cf6;
+// --- Settings & State ---
+const RAW_ANSWERS_URL = "https://raw.githubusercontent.com/3b1b/videos/master/_2022/wordle/data/possible_words.txt";
+const RAW_GUESSES_URL = "https://raw.githubusercontent.com/3b1b/videos/master/_2022/wordle/data/allowed_words.txt";
+
+let allAnswers = [];
+let allGuesses = [];
+let possibleWords = [];
+let activeAnswerSet = 'answers';
+let currentSortKey = 'expectedRemaining';
+let currentAnalysis = [];
+
+// --- Elements ---
+const el = {
+    input: document.getElementById("guessInput"),
+    addBtn: document.getElementById("addRowBtn"),
+    applyBtn: document.getElementById("applyBtn"),
+    resetBtn: document.getElementById("resetBtn"),
+    toggleBtn: document.getElementById("toggleAnswersBtn"),
+    analyzeBtn: document.getElementById("analyzeBtn"),
+    status: document.getElementById("status"),
+    board: document.getElementById("board"),
+    suggestions: document.getElementById("suggestions"),
+    computing: document.getElementById("computing"),
+    possibleCount: document.getElementById("possibleCount"),
+    minGuesses: document.getElementById("minGuesses"),
+    expectedAfter: document.getElementById("expectedAfter"),
+    avgSkill: document.getElementById("avgSkill"),
+    possibleAnswersWrap: document.getElementById("possibleAnswersWrap"),
+    possibleAnswers: document.getElementById("possibleAnswers"),
+    sortExp: document.getElementById("sortExpBtn"),
+    sortEnt: document.getElementById("sortEntropyBtn"),
+    sortScore: document.getElementById("sortScoreBtn")
+};
+
+// --- Initialization ---
+async function init() {
+    el.status.textContent = "Loading words...";
+    try {
+        const [resA, resG] = await Promise.all([fetch(RAW_ANSWERS_URL), fetch(RAW_GUESSES_URL)]);
+        allAnswers = (await resA.text()).split(/\s+/).filter(w => w.length === 5);
+        allGuesses = [...new Set([...allAnswers, ...(await resG.text()).split(/\s+/).filter(w => w.length === 5)])];
+        
+        resetAll();
+        el.status.textContent = `Ready! ${allAnswers.length} possible solutions.`;
+    } catch (e) {
+        el.status.textContent = "Error loading words. Use local files if needed.";
+    }
 }
 
-* { box-sizing: border-box; }
+// --- Event Listeners ---
+el.addBtn.onclick = () => onAddRow(el.input.value);
+el.applyBtn.onclick = onApplyFeedback;
+el.resetBtn.onclick = () => resetAll();
+el.toggleBtn.onclick = toggleAnswerMode;
+el.analyzeBtn.onclick = promptAnalyze;
+el.sortExp.onclick = () => setSort('expectedRemaining');
+el.sortEnt.onclick = () => setSort('entropy');
+el.sortScore.onclick = () => setSort('baseScore');
+el.input.onkeydown = (e) => e.key === "Enter" && onAddRow(el.input.value);
 
-body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: Inter, system-ui, -apple-system, sans-serif;
-    display: flex;
-    justify-content: center;
+document.addEventListener("DOMContentLoaded", init);
+
+// --- Functions ---
+
+function toggleAnswerMode() {
+    activeAnswerSet = activeAnswerSet === 'answers' ? 'guesses' : 'answers';
+    el.toggleBtn.textContent = `Answers: ${activeAnswerSet === 'answers' ? 'Official Set' : 'ALL Guesses'}`;
+    resetAll();
 }
 
-main {
-    width: 100%;
-    max-width: 980px;
-    padding: 24px;
+function resetAll() {
+    possibleWords = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
+    el.board.innerHTML = "";
+    el.avgSkill.textContent = "—";
+    currentAnalysis = [];
+    updateStatsAndSuggestions();
 }
 
-.controls {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
+function onAddRow(word, analysisData = null) {
+    const guess = word.trim().toLowerCase();
+    if (!/^[a-z]{5}$/.test(guess)) return;
+    if (!allGuesses.includes(guess)) {
+        alert("Not in word list.");
+        return;
+    }
+
+    const rowCont = document.createElement("div");
+    rowCont.className = "row-container";
+
+    const row = document.createElement("div");
+    row.className = "row";
+    row.dataset.guess = guess;
+
+    for (let i = 0; i < 5; i++) {
+        const tile = document.createElement("div");
+        tile.className = "tile state-0";
+        tile.textContent = guess[i].toUpperCase();
+        tile.dataset.state = "0";
+        tile.onclick = () => {
+            let s = (parseInt(tile.dataset.state) + 1) % 3;
+            tile.dataset.state = s;
+            tile.className = `tile state-${s}`;
+        };
+        row.appendChild(tile);
+    }
+
+    rowCont.appendChild(row);
+
+    if (analysisData) {
+        const info = document.createElement("div");
+        info.className = "analysis-label";
+        const skillColor = analysisData.skill > 80 ? 'skill-high' : '';
+        info.innerHTML = `Entropy: ${analysisData.ent.toFixed(2)}<br>Skill: <span class="${skillColor}">${analysisData.skill}%</span>`;
+        rowCont.appendChild(info);
+    }
+
+    el.board.appendChild(rowCont);
+    el.input.value = "";
 }
 
-.controls input {
-    padding: 10px;
-    font-size: 16px;
-    border-radius: 6px;
-    border: 1px solid var(--accent-gray);
-    background: var(--panel);
-    color: var(--text);
-    text-transform: uppercase;
+function getPattern(guess, solution) {
+    const g = guess.split(""), s = solution.split("");
+    const pattern = [0, 0, 0, 0, 0], counts = {};
+    for (let i = 0; i < 5; i++) {
+        if (g[i] === s[i]) pattern[i] = 2;
+        else counts[s[i]] = (counts[s[i]] || 0) + 1;
+    }
+    for (let i = 0; i < 5; i++) {
+        if (pattern[i] === 0 && counts[g[i]] > 0) {
+            pattern[i] = 1;
+            counts[g[i]]--;
+        }
+    }
+    return pattern.join("");
 }
 
-.controls button {
-    background: var(--panel);
-    border: 1px solid var(--muted);
-    border-radius: 6px;
-    padding: 8px 12px;
-    color: var(--text);
-    cursor: pointer;
-    font-weight: 600;
+async function updateStatsAndSuggestions() {
+    el.possibleCount.textContent = possibleWords.length;
+    const minG = Math.ceil(Math.log2(Math.max(1, possibleWords.length)) / Math.log2(243));
+    el.minGuesses.textContent = possibleWords.length <= 1 ? "Solved" : minG;
+    await computeSuggestions();
 }
 
-.btn-blue { background: var(--accent-blue) !important; border-color: var(--accent-blue) !important; }
-.btn-purple { background: var(--accent-purple) !important; border-color: var(--accent-purple) !important; }
+async function computeSuggestions() {
+    el.computing.classList.remove("hidden");
+    await new Promise(r => setTimeout(r, 10)); // UI Breath
 
-#board {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 24px;
-    align-items: center;
+    const N = possibleWords.length || 1;
+    const candidates = possibleWords.length < 100 ? allGuesses : allAnswers.slice(0, 200);
+    
+    // Simple filter to speed up suggestions
+    const results = [];
+    const pool = possibleWords.length < 50 ? allGuesses : allAnswers;
+
+    // To keep it fast for browser, we only analyze a subset of best words
+    // In a real app, we'd use a web worker
+    const sampleSize = possibleWords.length > 500 ? 100 : pool.length;
+    const testPool = pool.slice(0, sampleSize);
+
+    for (const cand of testPool) {
+        const counts = new Map();
+        for (const sol of possibleWords) {
+            const p = getPattern(cand, sol);
+            counts.set(p, (counts.get(p) || 0) + 1);
+        }
+        let entropy = 0, sumSq = 0;
+        for (const c of counts.values()) {
+            const p = c / N;
+            entropy -= p * Math.log2(p);
+            sumSq += c * c;
+        }
+        results.push({ word: cand, entropy, expectedRemaining: sumSq / N, baseScore: 0 });
+    }
+
+    results.sort((a, b) => currentSortKey === 'entropy' ? b.entropy - a.entropy : a.expectedRemaining - b.expectedRemaining);
+    renderSuggestions(results.slice(0, 10));
+    el.computing.classList.add("hidden");
 }
 
-.row-container {
-    display: flex;
-    align-items: center;
-    gap: 20px;
+function renderSuggestions(list) {
+    el.suggestions.innerHTML = "";
+    if (list.length) el.expectedAfter.textContent = list[0].expectedRemaining.toFixed(1);
+    list.forEach(item => {
+        const li = document.createElement("li");
+        li.innerHTML = `
+            <div class="sugg-left">
+                <span class="sugg-word">${item.word.toUpperCase()}</span>
+                <span class="sugg-meta">E: ${item.entropy.toFixed(2)} | Rem: ${item.expectedRemaining.toFixed(1)}</span>
+            </div>
+            <button onclick="el.input.value='${item.word}'; el.input.focus();">Use</button>
+        `;
+        el.suggestions.appendChild(li);
+    });
+
+    // Possible words list
+    if (possibleWords.length < 40 && possibleWords.length > 0) {
+        el.possibleAnswersWrap.classList.remove("hidden");
+        el.possibleAnswers.innerHTML = possibleWords.map(w => `<li>${w.toUpperCase()}</li>`).join("");
+    } else {
+        el.possibleAnswersWrap.classList.add("hidden");
+    }
 }
 
-.row {
-    display: grid;
-    grid-template-columns: repeat(5, var(--tile-size));
-    gap: 8px;
+function onApplyFeedback() {
+    const rows = Array.from(el.board.querySelectorAll(".row"));
+    let tempPossible = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
+
+    rows.forEach(row => {
+        const guess = row.dataset.guess;
+        const pattern = Array.from(row.querySelectorAll(".tile")).map(t => t.dataset.state).join("");
+        tempPossible = tempPossible.filter(sol => getPattern(guess, sol) === pattern);
+    });
+
+    possibleWords = tempPossible;
+    updateStatsAndSuggestions();
 }
 
-.analysis-label {
-    width: 150px;
-    font-size: 13px;
-    color: var(--muted);
-    line-height: 1.2;
+async function promptAnalyze() {
+    const input = prompt("Enter your game (guesses separated by spaces):", "CRANE SLOTH");
+    if (!input) return;
+    const guesses = input.toLowerCase().split(/[\s,]+/).filter(w => w.length === 5);
+    const target = guesses[guesses.length - 1]; // Assume last word is target
+
+    el.board.innerHTML = "";
+    possibleWords = activeAnswerSet === 'answers' ? [...allAnswers] : [...allGuesses];
+    let totalSkill = 0;
+
+    for (let i = 0; i < guesses.length; i++) {
+        const guess = guesses[i];
+        
+        // 1. Calculate best possible entropy for current state
+        const N = possibleWords.length;
+        if (N === 0) break;
+
+        // If only 1 word left, and you guess it, skill is 100%
+        let skill = 0;
+        let currentEnt = 0;
+
+        if (N === 1) {
+            skill = 100;
+            currentEnt = 0;
+        } else {
+            // Find max entropy in pool
+            const sample = possibleWords.slice(0, 50); // Sample for speed
+            let maxEnt = 0;
+            sample.forEach(w => {
+                const ent = calcWordEntropy(w, possibleWords);
+                if (ent > maxEnt) maxEnt = ent;
+            });
+
+            currentEnt = calcWordEntropy(guess, possibleWords);
+            skill = maxEnt > 0 ? (currentEnt / maxEnt) * 100 : 100;
+        }
+
+        totalSkill += skill;
+        onAddRow(guess, { ent: currentEnt, skill: Math.round(skill) });
+
+        // Update possible words for next turn based on target
+        const pattern = getPattern(guess, target);
+        possibleWords = possibleWords.filter(sol => getPattern(guess, sol) === pattern);
+        
+        // Update tiles visually
+        const lastRow = el.board.lastChild.querySelector(".row");
+        const tiles = lastRow.querySelectorAll(".tile");
+        pattern.split("").forEach((p, idx) => {
+            tiles[idx].dataset.state = p;
+            tiles[idx].className = `tile state-${p}`;
+        });
+    }
+
+    el.avgSkill.textContent = Math.round(totalSkill / guesses.length) + "%";
+    updateStatsAndSuggestions();
 }
 
-.skill-high { color: var(--accent-green); font-weight: bold; }
-
-.tile {
-    width: var(--tile-size);
-    height: var(--tile-size);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 800;
-    font-size: 22px;
-    border-radius: 4px;
-    border: 2px solid var(--accent-gray);
-    cursor: pointer;
-    text-transform: uppercase;
-    transition: background 0.2s;
+function calcWordEntropy(word, pool) {
+    const counts = new Map();
+    const N = pool.length;
+    pool.forEach(sol => {
+        const p = getPattern(word, sol);
+        counts.set(p, (counts.get(p) || 0) + 1);
+    });
+    let ent = 0;
+    for (const c of counts.values()) {
+        const p = c / N;
+        ent -= p * Math.log2(p);
+    }
+    return ent;
 }
 
-.state-0 { background: var(--accent-gray); border-color: var(--accent-gray); }
-.state-1 { background: var(--accent-yellow); color: #000; border-color: var(--accent-yellow); }
-.state-2 { background: var(--accent-green); border-color: var(--accent-green); }
-
-#info { display: flex; gap: 16px; flex-wrap: wrap; }
-#stats, #suggestionsWrap, #possibleAnswersWrap {
-    background: var(--panel);
-    padding: 16px;
-    border-radius: 12px;
-    flex: 1 1 300px;
+function setSort(key) {
+    currentSortKey = key;
+    el.sortExp.classList.toggle("active-sort", key === 'expectedRemaining');
+    el.sortEnt.classList.toggle("active-sort", key === 'entropy');
+    el.sortScore.classList.toggle("active-sort", key === 'baseScore');
+    computeSuggestions();
 }
-
-.stat-item { margin-bottom: 8px; }
-
-.header-flex {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 15px;
-}
-
-.sort-controls button {
-    padding: 4px 8px;
-    font-size: 11px;
-    background: var(--bg);
-    border: 1px solid var(--accent-gray);
-    color: var(--text);
-    cursor: pointer;
-}
-
-.sort-controls button.active-sort {
-    background: var(--accent-yellow);
-    color: #000;
-}
-
-#suggestions li {
-    display: flex;
-    justify-content: space-between;
-    padding: 8px 0;
-    border-bottom: 1px solid #2a2a2b;
-}
-
-.sugg-word { font-weight: bold; font-size: 16px; }
-.sugg-meta { font-size: 12px; color: var(--muted); }
-
-.hidden { display: none !important; }
