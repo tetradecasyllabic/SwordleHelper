@@ -1,6 +1,6 @@
 // --- Settings & State ---
-const RAW_ANSWERS_URL = "https://raw.githubusercontent.com/3b1b/videos/master/_2022/wordle/data/possible_words.txt";
-const RAW_GUESSES_URL = "https://raw.githubusercontent.com/3b1b/videos/master/_2022/wordle/data/allowed_words.txt";
+const RAW_ANSWERS_URL = "answers.txt"; 
+const RAW_GUESSES_URL = "guesses.txt"; 
 
 let allAnswers = [];
 let allGuesses = [];
@@ -36,14 +36,25 @@ const el = {
 async function init() {
     el.status.textContent = "Loading words...";
     try {
-        const [resA, resG] = await Promise.all([fetch(RAW_ANSWERS_URL), fetch(RAW_GUESSES_URL)]);
-        allAnswers = (await resA.text()).split(/\s+/).filter(w => w.length === 5);
-        allGuesses = [...new Set([...allAnswers, ...(await resG.text()).split(/\s+/).filter(w => w.length === 5)])];
+        const [resA, resG] = await Promise.all([
+            fetch(RAW_ANSWERS_URL, { cache: "no-cache" }), 
+            fetch(RAW_GUESSES_URL, { cache: "no-cache" })
+        ]);
+        
+        const txtA = await resA.text();
+        const txtG = await resG.text();
+
+        allAnswers = txtA.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+        const uniqueGuesses = txtG.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+        
+        // Combine unique guesses and all answers into the definitive guessable list
+        allGuesses = Array.from(new Set([...uniqueGuesses, ...allAnswers]));
         
         resetAll();
-        el.status.textContent = `Ready! ${allAnswers.length} possible solutions.`;
+        el.status.textContent = `Ready! ${allAnswers.length} answers, ${allGuesses.length} total guesses.`;
     } catch (e) {
-        el.status.textContent = "Error loading words. Use local files if needed.";
+        console.error(e);
+        el.status.textContent = "Error loading words. Ensure answers.txt and guesses.txt exist.";
     }
 }
 
@@ -146,14 +157,12 @@ async function computeSuggestions() {
     await new Promise(r => setTimeout(r, 10)); // UI Breath
 
     const N = possibleWords.length || 1;
-    const candidates = possibleWords.length < 100 ? allGuesses : allAnswers.slice(0, 200);
     
     // Simple filter to speed up suggestions
     const results = [];
     const pool = possibleWords.length < 50 ? allGuesses : allAnswers;
 
     // To keep it fast for browser, we only analyze a subset of best words
-    // In a real app, we'd use a web worker
     const sampleSize = possibleWords.length > 500 ? 100 : pool.length;
     const testPool = pool.slice(0, sampleSize);
 
